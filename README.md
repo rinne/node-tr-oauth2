@@ -65,4 +65,4 @@ Timo J. Rinne <tri@iki.fi>
 License
 =======
 
-UNLICENSED
+GPL-2.0
