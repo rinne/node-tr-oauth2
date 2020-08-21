@@ -1,0 +1,13 @@
+#! /bin/sh
+
+sf=oauth-srv.key
+pf=oauth-srv.pub
+
+if test -e "$sf" -o -e "$pf" ; then
+  echo "Files $sf and $pf must be removed before new keys can be generated." 1>&2
+  echo "Consider backing them up." 1>&2
+  exit 1
+fi
+
+openssl genrsa -out "$sf" 2048 &&
+openssl rsa -in "$sf" -outform PEM -pubout -out "$pf"
