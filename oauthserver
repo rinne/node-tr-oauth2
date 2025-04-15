@@ -1,3 +1,4 @@
-#! /bin/sh
+#! /usr/bin/env node
+'use strict';
 
-exec node ./server.js "$@"
+(require('./server'))();
