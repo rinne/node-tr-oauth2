@@ -2,10 +2,10 @@
 
 module.exports = function() {
 
-	const http = require('http');
-	const crypto = require('crypto');
-	const qs = require('querystring')
-	const fs = require('fs');
+	const http = require('node:http');
+	const crypto = require('node:crypto');
+	const qs = require('node:querystring')
+	const fs = require('node:fs');
 	const jwt = require('jsonwebtoken');
 	const jwk = require('pem-jwk');
 	const Optist = require('optist');
@@ -24,8 +24,35 @@ module.exports = function() {
 		users: {},
 		jtRevocation: new Map(),
 		jtLogout: new Map(),
-		jwtConf: {}
+		jwtConf: {},
+		staticContent: new Map()
 	};
+
+	function isArrayOfStrings(a) {
+		return (Array.isArray(a) && (a.filter((x) => (typeof(x) !== 'string')).length == 0));
+	}
+
+	function readStaticContent() {
+		let rv = true;
+		try {
+			let d = fs.opendirSync(__dirname + '/static-content');
+			do {
+				let f = d.readSync();
+				if (! f) {
+					break;
+				}
+				if (! f.isFile()) {
+					continue;
+				}
+				context.staticContent.set(f.name, fs.readFileSync(f.path));
+			} while(true);
+			d.closeSync();
+		} catch (e) {
+			console.log(e);
+			rv = false;
+		}
+		return rv;
+	}
 
 	var opt = ((new Optist())
 			   .opts([ { longName: 'listen-address',
@@ -87,6 +114,7 @@ module.exports = function() {
 			   .parse(undefined, 0, 0));
 
 	(function() {
+
 		context.jwtConf.issuer = opt.value('token-issuer');
 		context.jwtConf.defaultTTL = opt.value('token-ttl');
 		if (opt.value('secret-key-file')) {
@@ -160,6 +188,10 @@ module.exports = function() {
 			console.log('Invalid symmetric secret or public key pair');
 			process.exit(1);
 		}
+		if (! readStaticContent()) {
+			console.log('Unable to read static content');
+			process.exit(1);
+		}
 		return (Promise.resolve()
 				.then(function() {
 					return userFileRead(opt.value('users-file'));
@@ -186,7 +218,7 @@ module.exports = function() {
 	})();
 
 	function intervalCb() {
-		var now = Math.floor(Date.now() / 1000);
+		let now = Math.floor(Date.now() / 1000);
 		context.jtRevocation.forEach(function(exp, jti, map) {
 			if ((exp + 900)  < now) {
 				map.delete(jti);
@@ -195,7 +227,7 @@ module.exports = function() {
 	}
 
 	function validateUserAuth(auth) {
-		var u = ((context.users &&
+		let u = ((context.users &&
 				  auth &&
 				  auth.user &&
 				  ((typeof(auth.user) === 'string')) &&
@@ -226,7 +258,7 @@ module.exports = function() {
 	}
 
 	function parseBasicAuth(s) {
-		var m, b;
+		let m, b;
 		if ((typeof(s) !== 'string') ||
 			(! (m = s.match(/^\s*Basic\s+([0-9A-Za-z\+\\]+={0,2})\s*/)))) {
 			return undefined;
@@ -272,8 +304,8 @@ module.exports = function() {
 	}
 
 	function createToken(user) {
-		var now = Math.floor(Date.now() / 1000);
-		var data = {
+		let now = Math.floor(Date.now() / 1000);
+		let data = {
 			iss: context.jwtConf.issuer,
 			kid: null,
 			iat: now,
@@ -283,6 +315,12 @@ module.exports = function() {
 			jti: crypto.randomUUID(),
 			client_id: user.user
 		};
+		if (data.scope.length < 1) {
+			delete data.scope;
+		}
+		if (data.authorities.length < 1) {
+			delete data.authorities;
+		}
 		if (context.jwtConf.keyId) {
 			data.kid = context.jwtConf.keyId;
 		} else {
@@ -294,12 +332,13 @@ module.exports = function() {
 								  context.jwtConf.secretKey),
 								 { algorithm: context.jwtConf.algorithm }),
 				 jti: data.jti,
-				 exp: data.exp };
+				 exp: data.exp,
+				 expires_in: data.exp - now };
 	}
 
 	function validateToken(token) {
-		var now = Math.floor(Date.now() / 1000);
-		var data;
+		let now = Math.floor(Date.now() / 1000);
+		let data;
 		try {
 			data = jwt.verify(token,
 							  (context.jwtConf.secret ?
@@ -309,9 +348,6 @@ module.exports = function() {
 		} catch (e) {
 			data = undefined;
 		}
-
-		
-		
 		if (! (data &&
 			   (typeof(data) === 'object') &&
 			   data.iat && (typeof(data.iat) === 'number') && (data.iat <= now) &&
@@ -323,12 +359,19 @@ module.exports = function() {
 				(data.iat > context.jtLogout.get(data.client_id))))) {
 			return undefined;
 		}
+		if (typeof(data.scope) === 'string') {
+			data.scope = [ data.scope ];
+		} else if (data.scope === undefined) {
+			data.scope = [];
+		} else if (! isArrayOfStrings(data.scope)) {
+			return undefined;
+		}
 		return data;
 	}
 
 	function handle(r)
 	{
-		var res = r.res, rd = {}, token, user;
+		let res = r.res, rd = {}, token, user;
 		delete r.res;
 		noCache(res);
 		r.auth = r.headers.authorization ? parseBasicAuth(r.headers.authorization) : undefined;
@@ -350,14 +393,16 @@ module.exports = function() {
 			}
 			if (r.params.scope) {
 				if ((r.params.scope === '*') ||
-					((r.user.scope.indexOf(r.params.scope) < 0) &&
-					 (r.user.scope.indexOf('*') < 0))) {
+					(! (r.user.scope.includes(r.params.scope) ||
+						r.user.scope.includes('*')))) {
 					error(res, 403,
 						  'Scope invalid, unknown, malformed or exceeds what can be granted.',
 						  'invalid_scope');
 					return;
 				}
 				r.user.scope = [ r.params.scope ];
+			} else {
+				r.user.scope = [];
 			}
 			token = createToken(r.user);
 			rd = {
@@ -456,7 +501,7 @@ module.exports = function() {
 			};
 			break;
 		case '/keys':
-			if (r.method !== 'GET') {
+			if (! ['GET'].includes(r.method)) {
 				error(res, 405, 'Only GET is allowed.', 'invalid_request');
 				return;
 			}
@@ -471,6 +516,64 @@ module.exports = function() {
 							  } );
 			}
 			break;
+		case '/authorize':
+			if (! (r.params.response_type === 'code')) {
+				error(res, 400, 'Invalid request parameter (response_type)');
+				return;
+			}
+			if (! (r.params.client_id && (typeof(r.params.client_id) === 'string'))) {
+				error(res, 400, 'Invalid request parameter (client_id)');
+				return;
+			}
+			if (! (r.params.redirect_uri &&
+				   (typeof(r.params.redirect_uri) === 'string') &&
+				   URL.canParse(r.params.redirect_uri))) {
+				error(res, 400, 'Invalid request parameter (redirect_uri)');
+				return;
+			}
+			if (! (typeof(r.params.scope) === 'string')) {
+				error(res, 400, 'Invalid request parameter (scope)');
+				return;
+			}
+			if (! (r.params.state && (typeof(r.params.state) === 'string'))) {
+				error(res, 400, 'Invalid request parameter (state)');
+				return;
+			}
+			if (((r.params.user && (typeof(r.params.user) === 'string')) &&
+				 (r.params.password && (typeof(r.params.password) === 'string')))) {
+				let auth = { user: r.params.user, password: r.params.password };
+				console.log('auth:', auth);
+				let user = validateUserAuth(auth);
+				console.log('user:', user);
+				if (user) {
+					if (r.params.scope) {
+						if ((r.params.scope !== '*') && ((user.scope.includes(r.params.scope) ||
+														  user.scope.includes('*')))) {
+							user.scope = [ r.params.scope ];
+						} else {
+							user.scope = undefined;
+						}
+					} else {
+						user.scope = [];
+					}
+					if (user.scope) {
+						console.log('user:', user);
+						let token = createToken(user);
+						console.log('token:', token);
+						let redirect = (r.params.redirect_uri +
+										'?' +
+										qs.stringify({ access_token: token.token,
+													   token_type: 'Bearer',
+													   expires_in: token.expires_in,
+													   state: r.params.state }));
+						console.log(redirect);
+					}
+				}
+			}
+			res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+			res.write(context.staticContent.get('authorize'));
+			res.end();
+			return;
 		default:
 			error(res, 404, 'Resource not found.');
 			return;
@@ -481,7 +584,7 @@ module.exports = function() {
 	}
 
 	function requestCb(req, res) {
-		var completed = false, body = Buffer.alloc(0), r = {}, timeout;
+		let completed = false, body = Buffer.alloc(0), r = {}, timeout;
 		function dataCb(data) {
 			if (completed) {
 				return;
@@ -542,7 +645,7 @@ module.exports = function() {
 					error(res, 400, 'Empty body required for GET requests.');
 					return;
 				}
-				var m;
+				let m;
 				if (m = req.url.match(/^([^\?]*)\?(.*)$/)) {
 					r.url = m[1];
 					if (! (r.params = qs.parse(m[2].toString('utf8')))) {
