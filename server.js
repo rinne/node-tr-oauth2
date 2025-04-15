@@ -12,7 +12,6 @@ module.exports = function() {
 	const ou = require('optist/util');
 
 	const userFileRead = require('./userfileread.js');
-	userFileRead('users.dat');
 
 	/*
 	  If tokens must remain valid over restart, define secret as a random
