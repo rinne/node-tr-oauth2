@@ -566,7 +566,12 @@ module.exports = function() {
 													   token_type: 'Bearer',
 													   expires_in: token.expires_in,
 													   state: r.params.state }));
-						console.log(redirect);
+						console.log('redirect:', redirect);
+						res.writeHead(302, { 'Content-Type': 'text/html; charset=utf-8',
+											 'Location': redirect,
+											 'Connection': 'close' });
+						res.end();
+						return;
 					}
 				}
 			}
