@@ -1,7 +1,7 @@
 {
 	"name": "tr-oauth2",
-	"version": "3.3.0",
-	"description": "Very simple OAUTH2 token issuer and validator.",
+	"version": "4.0.0",
+	"description": "Relatively simple OAUTH2 token issuer and validator.",
 	"main": "index.js",
 	"scripts": {
 		"test": "node ./index.js"

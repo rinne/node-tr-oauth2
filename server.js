@@ -11,7 +11,9 @@ module.exports = function() {
 	const Optist = require('optist');
 	const ou = require('optist/util');
 
-	const userFileRead = require('./userfileread.js');
+	const userFileRead = require('./userfileread');
+	const clientFileRead = require('./clientfileread');
+	const template = require('./template');
 
 	/*
 	  If tokens must remain valid over restart, define secret as a random
@@ -22,6 +24,7 @@ module.exports = function() {
 
 	var context = {
 		users: {},
+		clients: null,
 		jtRevocation: new Map(),
 		jtLogout: new Map(),
 		jwtConf: {},
@@ -44,7 +47,7 @@ module.exports = function() {
 				if (! f.isFile()) {
 					continue;
 				}
-				context.staticContent.set(f.name, fs.readFileSync(f.path));
+				context.staticContent.set(f.name, fs.readFileSync(f.path, 'utf8'));
 			} while(true);
 			d.closeSync();
 		} catch (e) {
@@ -85,6 +88,11 @@ module.exports = function() {
 						 environment: 'TR_OAUTH2_OPT_USERS_FILE',
 						 optArgCb: ou.existingFileNameCb,
 						 required: true },
+					   { longName: 'clients-file',
+						 description: 'CSV file containing clients data.',
+						 hasArg: true,
+						 environment: 'TR_OAUTH2_OPT_CLIENTS_FILE',
+						 optArgCb: ou.existingFileNameCb },
 					   { longName: 'secret-key-file',
 						 description: 'Read token signing key from file.',
 						 hasArg: true,
@@ -156,7 +164,7 @@ module.exports = function() {
 			context.jwtConf.secret = opt.value('secret');
 		} else {
 			context.jwtConf.algorithm = 'HS256';
-			context.jwtConf.secret = crypto.randomBytes(64).toString('base64');
+			context.jwtConf.secret = crypto.randomBytes(66).toString('base64');
 		}
 		try {
 			(function(t, a, b) {
@@ -200,6 +208,18 @@ module.exports = function() {
 					context.users = ret;
 				})
 				.then(function() {
+					if (opt.value('clients-file')) {
+						return clientFileRead(opt.value('clients-file'));
+					}
+					return null;
+				})
+				.then(function(ret) {
+					context.clients = ret;
+				})
+				.then(function(ret) {
+					//console.log(context);
+				})
+				.then(function() {
 					context.server = http.createServer(requestCb);
 					context.server.on('error', function(e) {
 						console.log('Unable to start HTTP server');
@@ -227,31 +247,22 @@ module.exports = function() {
 	}
 
 	function validateUserAuth(auth) {
-		let u = ((context.users &&
-				  auth &&
-				  auth.user &&
-				  ((typeof(auth.user) === 'string')) &&
-				  auth.password &&
-				  ((typeof(auth.password) === 'string'))) ?
-				 (context.users[auth.user] ?
-				  context.users[auth.user] :
-				  (context.users['*'] ?
-				   context.users['*'] :
-				   undefined)) :
-				 undefined);
+		if (! (context?.users &&
+			   ((typeof(auth?.user) === 'string')) &&
+			   ((typeof(auth?.password) === 'string')))) {
+			return undefined;
+		}
+		let u = context.users.get(auth.user) ?? context.users.get('*');
+		if (! u) {
+			return undefined;
+		}
 		if (u && ((! u.password) || (auth.password === u.password))) {
 			return {
 				user: auth.user,
 				user_password_set: ((u.password && u.password.length) ? true : false),
-				scope: (u.scope ?
-						(Array.isArray(u.scope) ? u.scope : [ u.scope ]) :
-						[]),
-				authorities: (u.authorities ?
-							  (Array.isArray(u.authorities) ?
-							   u.authorities :
-							   [ u.authorities ]) :
-							  []),
-				ttl: u.ttl ? u.ttl : null
+				scope: u.scope,
+				authorities: u.authorities,
+				ttl: u.ttl
 			};
 		}
 		return undefined;
@@ -309,9 +320,9 @@ module.exports = function() {
 			iss: context.jwtConf.issuer,
 			kid: null,
 			iat: now,
-			exp: now + (user.ttl ? user.ttl : context.jwtConf.defaultTTL),
-			scope: user.scope,
-			authorities: user.authorities,
+			exp: now + (user.ttl ?? context.jwtConf.defaultTTL),
+			scope: Array.from(user.scope ?? []),
+			authorities: Array.from(user.authorities ?? []),
 			jti: crypto.randomUUID(),
 			client_id: user.user
 		};
@@ -360,10 +371,12 @@ module.exports = function() {
 			return undefined;
 		}
 		if (typeof(data.scope) === 'string') {
-			data.scope = [ data.scope ];
+			data.scope = new Set([ data.scope ]);
 		} else if (data.scope === undefined) {
-			data.scope = [];
-		} else if (! isArrayOfStrings(data.scope)) {
+			data.scope = new Set();
+		} else if (isArrayOfStrings(data.scope)) {
+			data.scope = new Set(data.scope);
+		} else {
 			return undefined;
 		}
 		return data;
@@ -393,23 +406,23 @@ module.exports = function() {
 			}
 			if (r.params.scope) {
 				if ((r.params.scope === '*') ||
-					(! (r.user.scope.includes(r.params.scope) ||
-						r.user.scope.includes('*')))) {
+					(! (r.user.scope.has(r.params.scope) ||
+						r.user.scope.has('*')))) {
 					error(res, 403,
 						  'Scope invalid, unknown, malformed or exceeds what can be granted.',
 						  'invalid_scope');
 					return;
 				}
-				r.user.scope = [ r.params.scope ];
+				r.user.scope = new Set([ r.params.scope ]);
 			} else {
-				r.user.scope = [];
+				r.user.scope = new Set();
 			}
 			token = createToken(r.user);
 			rd = {
 				access_token: token.token,
 				token_type: 'bearer',
 				expires_in: token.exp - Math.ceil(Date.now() / 1000),
-				scope: r.user.scope,
+				scope: Array.from(r.user.scope),
 				authorities: r.user.authorities,
 				jti: token.jti
 			};
@@ -517,68 +530,89 @@ module.exports = function() {
 			}
 			break;
 		case '/authorize':
-			if (! (r.params.response_type === 'code')) {
-				error(res, 400, 'Invalid request parameter (response_type)');
-				return;
-			}
-			if (! (r.params.client_id && (typeof(r.params.client_id) === 'string'))) {
-				error(res, 400, 'Invalid request parameter (client_id)');
-				return;
-			}
-			if (! (r.params.redirect_uri &&
-				   (typeof(r.params.redirect_uri) === 'string') &&
-				   URL.canParse(r.params.redirect_uri))) {
-				error(res, 400, 'Invalid request parameter (redirect_uri)');
-				return;
-			}
-			if (! (typeof(r.params.scope) === 'string')) {
-				error(res, 400, 'Invalid request parameter (scope)');
-				return;
-			}
-			if (! (r.params.state && (typeof(r.params.state) === 'string'))) {
-				error(res, 400, 'Invalid request parameter (state)');
-				return;
-			}
-			if (((r.params.user && (typeof(r.params.user) === 'string')) &&
-				 (r.params.password && (typeof(r.params.password) === 'string')))) {
-				let auth = { user: r.params.user, password: r.params.password };
-				console.log('auth:', auth);
-				let user = validateUserAuth(auth);
-				console.log('user:', user);
-				if (user) {
-					if (r.params.scope) {
-						if ((r.params.scope !== '*') && ((user.scope.includes(r.params.scope) ||
-														  user.scope.includes('*')))) {
-							user.scope = [ r.params.scope ];
-						} else {
-							user.scope = undefined;
-						}
-					} else {
-						user.scope = [];
-					}
-					if (user.scope) {
-						console.log('user:', user);
-						let token = createToken(user);
-						console.log('token:', token);
-						let redirect = (r.params.redirect_uri +
-										'?' +
-										qs.stringify({ access_token: token.token,
-													   token_type: 'Bearer',
-													   expires_in: token.expires_in,
-													   state: r.params.state }));
-						console.log('redirect:', redirect);
-						res.writeHead(302, { 'Content-Type': 'text/html; charset=utf-8',
-											 'Location': redirect,
-											 'Connection': 'close' });
-						res.end();
+			{
+				if (! context.clients) {
+					error(res, 404, 'Resource not found.');
+					return;
+				}
+				let content = context.staticContent.get('authorize')
+				if (! content) {
+					error(res, 404, 'Resource not found.');
+					return;
+				}
+				if (! (r.params.response_type === 'code')) {
+					error(res, 400, 'Invalid request parameter (response_type)');
+					return;
+				}
+				if (! (r.params.client_id && (typeof(r.params.client_id) === 'string'))) {
+					error(res, 400, 'Invalid request parameter (client_id)');
+					return;
+				}
+				if (! (r.params.redirect_uri &&
+					   (typeof(r.params.redirect_uri) === 'string') &&
+					   URL.canParse(r.params.redirect_uri))) {
+					error(res, 400, 'Invalid request parameter (redirect_uri)');
+					return;
+				}
+				if (! (typeof(r.params.scope) === 'string')) {
+					error(res, 400, 'Invalid request parameter (scope)');
+					return;
+				}
+				if (! (r.params.state && (typeof(r.params.state) === 'string'))) {
+					error(res, 400, 'Invalid request parameter (state)');
+					return;
+				}
+				if (((r.params.username && (typeof(r.params.username) === 'string')) &&
+					 (r.params.password && (typeof(r.params.password) === 'string')))) {
+					let client = context.clients.get(r.params.client_id);
+					if (! client) {
+						error(res, 403, 'Invalid client');
 						return;
 					}
+					if (client.redirect_uri !== r.params.redirect_uri) {
+						error(res, 403, 'Invalid redirect for client');
+						return;
+					}
+					let auth = { user: r.params.username, password: r.params.password };
+					let user = validateUserAuth(auth);
+					if (user) {
+						if (r.params.scope) {
+							if ((r.params.scope !== '*') && ((user.scope.has(r.params.scope) || user.scope.has('*')))) {
+								user.scope = new Set([ r.params.scope ]);
+							} else {
+								user.scope = undefined;
+							}
+						} else {
+							user.scope = new Set();
+						}
+						if (user.scope) {
+							let token = createToken(user);
+							let redirect = (r.params.redirect_uri +
+											'?' +
+											qs.stringify({ access_token: token.token,
+														   token_type: 'Bearer',
+														   expires_in: token.expires_in,
+														   state: r.params.state }));
+							res.writeHead(302, { 'Content-Type': 'text/html; charset=utf-8',
+												 'Location': redirect,
+												 'Connection': 'close' });
+							res.end();
+							return;
+						}
+					}
 				}
+				let subs = new Map([ [ 'username', r.params.username ?? null ],
+									 [ 'client_id', r.params.client_id ?? null ],
+									 [ 'redirect_uri', r.params.redirect_uri ?? null ],
+									 [ 'response_type', r.params.response_type ?? null ],
+									 [ 'scope', r.params.scope ?? null ],
+									 [ 'state', r.params.state ?? null ] ]);
+				content = template(content, subs);
+				res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+				res.write(content);
+				res.end();
+				return;
 			}
-			res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-			res.write(context.staticContent.get('authorize'));
-			res.end();
-			return;
 		default:
 			error(res, 404, 'Resource not found.');
 			return;

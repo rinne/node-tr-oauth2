@@ -59,9 +59,9 @@
       border-radius: 4px;
       cursor: pointer;
     }
-    /* Cancel button uses roughly 38.2% of the width */
+    /* Cancel button uses roughly 38% of the width */
     .button-group button.cancel {
-      width: 38.2%;
+      width: 38%;
       background-color: #d9534f;
       color: #fff;
       margin-right: 0.5%;
@@ -69,14 +69,17 @@
     .button-group button.cancel:hover {
       background-color: #c9302c;
     }
-    /* Login button takes remaining 61.8% */
+    /* Login button takes remaining 62% */
     .button-group button.login {
-      width: 61.8%;
+      width: 62%;
       background-color: #4CAF50;
       color: #fff;
     }
     .button-group button.login:hover {
       background-color: #45a049;
+    }
+    .button-group button.login:disabled {
+      background-color: #aaaaaa;
     }
     /* Modal overlay for error messages */
     .modal-overlay {
@@ -124,12 +127,17 @@
       <h2>Login</h2>
       <!-- Use novalidate to allow custom validation -->
       <form id="loginForm" novalidate>
-        <input type="email" id="username" name="username" placeholder="Email" required>
-        <input type="password" id="password" name="password" placeholder="Password (min 8 characters)" required>
+        <input type="email" id="username" name="username" value="{{username}}" placeholder="Email">
+        <input type="password" id="password" name="password" value="{{password}}" placeholder="Password (min 8 characters)">
+        <input type="hidden" id="client_id" name="client_id" value="{{client_id}}">
+        <input type="hidden" id="redirect_uri" name="redirect_uri" value="{{redirect_uri}}">
+        <input type="hidden" id="response_type" name="response_type" value="{{response_type}}">
+        <input type="hidden" id="scope" name="scope" value="{{scope}}">
+        <input type="hidden" id="state" name="state" value="{{state}}">
         <!-- Button Group with Cancel and Login buttons -->
         <div class="button-group">
           <button type="button" id="cancelButton" class="cancel">Cancel</button>
-          <button type="submit" class="login">Login</button>
+          <button type="submit" id="loginButton" class="login" disabled>Login</button>
         </div>
       </form>
     </div>
@@ -144,49 +152,64 @@
   </div>
 
   <script>
-    // Utility function to show the error modal with a custom message
-    function showError(message) {
-      var errorModal = document.getElementById('errorModal');
-      var errorText = document.getElementById('errorText');
-      errorText.innerHTML = message;
-      errorModal.style.display = "flex";
-    }
-    // Hide error modal on clicking OK
-    document.getElementById('closeError').addEventListener('click', function() {
-      document.getElementById('errorModal').style.display = "none";
-    });
+    document.addEventListener('DOMContentLoaded', function () {
 
-    // Cancel button now shows an alert notifying that the login was cancelled.
-    document.getElementById('cancelButton').addEventListener('click', function() {
-      alert("Login cancelled");
-    });
+      const url = new URL(window.location.href);
+      url.search = '';
+      const cleanUrl = url.toString();
 
-    // Attach event listener for form submission (button click or Enter)
-    document.getElementById('loginForm').addEventListener('submit', function(e) {
-      e.preventDefault(); // Prevent form's default submission behavior
-
-      var usernameField = document.getElementById('username');
-      var passwordField = document.getElementById('password');
-      var username = usernameField.value.trim();
-      var password = passwordField.value;
-
-      var errors = [];
-      // Simple regex for validating email address
-      var emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(username)) {
-        errors.push("Username must be a valid email address.");
+      // Create a URLSearchParams object from the URL query string
+      const queryParams = new URLSearchParams(window.location.search);
+      // Iterate over each query parameter
+      queryParams.forEach((value, key) => {
+        // Find an element by ID matching the query parameter key
+        const inputField = document.getElementById(key);
+        if (inputField) {
+          // Set the value of the input element to the query parameter value
+          inputField.value = value;
+        }
+      });
+      // Utility function to show the error modal with a custom message
+      function showError(message) {
+        var errorModal = document.getElementById('errorModal');
+        var errorText = document.getElementById('errorText');
+        errorText.innerHTML = message;
+        errorModal.style.display = "flex";
       }
-      if (password.length < 8) {
-        errors.push("Password must be at least 8 characters long.");
-      }
+      // Hide error modal on clicking OK
+      document.getElementById('closeError').addEventListener('click', function() {
+        document.getElementById('errorModal').style.display = "none";
+      });
+  
+      // Cancel button now shows an alert notifying that the login was cancelled.
+      document.getElementById('cancelButton').addEventListener('click', function() {
+        alert("Login cancelled");
+      });
+  
+      const loginForm = document.getElementById('loginForm');
+      loginForm.setAttribute("action", cleanUrl);
+      loginForm.setAttribute("method", "POST");
 
-      if (errors.length > 0) {
-        // Display errors by joining them with line breaks
-        showError(errors.join("<br>"));
-      } else {
-        // On valid input, simply call alert with user-provided values.
-        alert("User: " + username + " Pass: " + password);
+      function validateInputForm() {
+        var usernameField = document.getElementById('username');
+        var passwordField = document.getElementById('password');
+        var loginButton = document.getElementById('loginButton');
+        var username = usernameField.value.trim();
+        var password = passwordField.value;
+	var disabled = false;
+        if (/^(\w+([.-]\w+)*)@(\w+(-\w+)*\.){1,5}(\w{2,10})$/.test(username)) {
+          usernameField.value = username;
+        } else {
+          disabled = true;
+        }
+        if (password.length < 8) {
+          disabled = true;
+        }   
+        loginButton.disabled = disabled;
       }
+      document.getElementById('username').addEventListener('input', validateInputForm);
+      document.getElementById('password').addEventListener('input', validateInputForm);
+      validateInputForm();
     });
   </script>
 </body>

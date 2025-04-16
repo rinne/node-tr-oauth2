@@ -1,0 +1,2 @@
+client_id;client_secret;redirect_uri
+test;;https://my.example.tld/land-back-page
