@@ -30,7 +30,6 @@ function csvRead(filename, spec) {
 					(fs.createReadStream(filename)
 					 .pipe(csv({ separator: ';' }))
 					 .on('data', function(row) {
-						 console.log(row);
 						 let pr = {};
 						 for (let k of Object.keys(spec.fields)) {
 							 if (row[k] === undefined) {

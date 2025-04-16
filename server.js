@@ -6,6 +6,7 @@ module.exports = function() {
 	const crypto = require('node:crypto');
 	const qs = require('node:querystring')
 	const fs = require('node:fs');
+	const path = require('node:path');
 	const jwt = require('jsonwebtoken');
 	const jwk = require('pem-jwk');
 	const Optist = require('optist');
@@ -38,7 +39,8 @@ module.exports = function() {
 	function readStaticContent() {
 		let rv = true;
 		try {
-			let d = fs.opendirSync(__dirname + '/static-content');
+            let n = fs.realpathSync(path.dirname(fs.realpathSync(__filename)) + '/static-content');
+			let d = fs.opendirSync(n);
 			do {
 				let f = d.readSync();
 				if (! f) {
