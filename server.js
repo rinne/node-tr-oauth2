@@ -49,7 +49,7 @@ module.exports = function() {
 				if (! f.isFile()) {
 					continue;
 				}
-				context.staticContent.set(f.name, fs.readFileSync(f.path, 'utf8'));
+				context.staticContent.set(f.name, fs.readFileSync(fs.realpathSync(n + '/' + f.name), 'utf8'));
 			} while(true);
 			d.closeSync();
 		} catch (e) {
