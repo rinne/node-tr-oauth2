@@ -275,6 +275,9 @@ module.exports = function() {
 				.then(function() {
 					context.interval = setInterval(intervalCb, 10000);
 				})
+				.then(function() {
+					log(`OAUTH2 server is running in ${opt.value('listen-address')}:${opt.value('listen-port')}`);
+				})
 				.catch(function(e) {
 					fatal(e);
 				}));
