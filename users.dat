@@ -1,4 +1,4 @@
-username;password;authorities;scope;ttl
-admin;verysecret;AUTHENTICATED_CLIENT,SUPERUSER;*;
+username;password;totp;authorities;scope;ttl
+admin;verysecret;ZZZZZZZZZZZZZZZZ;AUTHENTICATED_CLIENT,SUPERUSER;*;
 test;;UNVERIFIED_CLIENT;TEST;60
 *;;UNIDENTIFIED_CLIENT;;60
