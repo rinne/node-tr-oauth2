@@ -24,13 +24,44 @@ module.exports = function() {
 	*/
 
 	var context = {
-		users: {},
+		debug: false,
+		users: new Map(),
 		clients: null,
 		jtRevocation: new Map(),
 		jtLogout: new Map(),
 		jwtConf: {},
-		staticContent: new Map()
+		staticContent: new Map(),
 	};
+
+	async function delay(ms) {
+		return new Promise(function (resolve, reject) { setTimeout(resolve, ms); });
+	}
+
+	function ts() {
+		return new Date().toISOString().slice(0, 19).replace('T', ' ');
+	}
+
+	function log(...av) {
+        console.log((ts() + ':'), ...av);
+	}
+
+	function debug(...av) {
+		if (context.debug) {
+			log(...av);
+		}
+	}
+
+	function fatal(...av) {
+		try {
+			if (context.debug) {
+				av.unshift((ts() + ':'));
+			}
+		} catch (e) {
+			/*NOTHING*/
+		}
+		console.error(...av);
+		process.exit(1);
+	}
 
 	function isArrayOfStrings(a) {
 		return (Array.isArray(a) && (a.filter((x) => (typeof(x) !== 'string')).length == 0));
@@ -53,14 +84,17 @@ module.exports = function() {
 			} while(true);
 			d.closeSync();
 		} catch (e) {
-			console.log(e);
+			console.error(e);
 			rv = false;
 		}
 		return rv;
 	}
 
 	var opt = ((new Optist())
-			   .opts([ { longName: 'listen-address',
+			   .opts([ { longName: 'debug',
+						 description: 'Debug mode.',
+						 environment: 'TR_OAUTH2_OPT_DEBUG' },
+					   { longName: 'listen-address',
 						 description: 'IP address the server listens to.',
 						 hasArg: true,
 						 defaultValue: '127.0.0.1',
@@ -123,6 +157,14 @@ module.exports = function() {
 			   .help('oauthserver')
 			   .parse(undefined, 0, 0));
 
+	context.debug = opt.value('debug') ? true : false;
+	if (context.debug) {
+		process.on("SIGUSR1", function() { debug('users:', context.users);
+										   debug('clients:', context.clients);
+										   debug('revocation:', context.jtRevocation);
+										   debug('logout:', context.jtLogout); });
+	}
+
 	(function() {
 
 		context.jwtConf.issuer = opt.value('token-issuer');
@@ -146,8 +188,7 @@ module.exports = function() {
 				context.jwtConf.algorithm = undefined;
 			}
 			if (! context.jwtConf.algorithm) {
-				console.log('Invalid public key pair');
-				process.exit(1);
+				fatal('Invalid public key pair');
 			}
 			context.jwtConf.keyId = (crypto
 									 .createHash('sha256')
@@ -195,15 +236,16 @@ module.exports = function() {
 			context.jwtConf.algorithm = undefined;
 		}
 		if (! context.jwtConf.algorithm) {
-			console.log('Invalid symmetric secret or public key pair');
-			process.exit(1);
+			console.error('Invalid symmetric secret or public key pair');
+			process.error(1);
 		}
 		if (! readStaticContent()) {
 			console.log('Unable to read static content');
-			process.exit(1);
+			process.error(1);
 		}
 		return (Promise.resolve()
 				.then(function() {
+					fs.watch(opt.value('users-file'), updateUsers);
 					return userFileRead(opt.value('users-file'));
 				})
 				.then(function(ret) {
@@ -211,6 +253,7 @@ module.exports = function() {
 				})
 				.then(function() {
 					if (opt.value('clients-file')) {
+						fs.watch(opt.value('clients-file'), updateClients);
 						return clientFileRead(opt.value('clients-file'));
 					}
 					return null;
@@ -219,13 +262,12 @@ module.exports = function() {
 					context.clients = ret;
 				})
 				.then(function(ret) {
-					//console.log(context);
+					debug(context);
 				})
 				.then(function() {
 					context.server = http.createServer(requestCb);
 					context.server.on('error', function(e) {
-						console.log('Unable to start HTTP server');
-						process.exit(1);
+						fatal('Unable to start HTTP server');
 					});
 					context.server.headersTimeout = 2000;
 					context.server.listen(opt.value('listen-port'), opt.value('listen-address'));
@@ -234,8 +276,7 @@ module.exports = function() {
 					context.interval = setInterval(intervalCb, 10000);
 				})
 				.catch(function(e) {
-					console.log(e);
-					process.exit(1);
+					fatal(e);
 				}));
 	})();
 
@@ -248,17 +289,59 @@ module.exports = function() {
 		});
 	}
 
+	function updateUsers(ev, fn) {
+		(async function() {
+			try {
+				delay(1000);
+				debug('Updating users');
+				let u = await userFileRead(opt.value('users-file'));
+				for (let n of context.users.keys()) {
+					if (! u.has(n)) {
+						context.jtLogout.set(n, Math.floor(Date.now() / 1000));
+					}
+				}
+				context.users = u;
+			} catch (e) {
+				fatal(e);
+			}
+		})();
+	}
+
+	function updateClients(ev, fn) {
+		if (! opt.value('clients-file')) {
+			return;
+		}
+		(async function() {
+			try {
+				delay(1000);
+				debug('Updating clients');
+				let u = await userFileRead(opt.value('users-file'));
+				for (let n of context.users.keys()) {
+					if (! u.has(n)) {
+						context.jtLogout.set(n, Math.floor(Date.now() / 1000));
+					}
+				}
+				context.users = u;
+			} catch (e) {
+				fatal(e);
+			}
+		})();
+	}
+
 	function validateUserAuth(auth) {
 		if (! (context?.users &&
 			   ((typeof(auth?.user) === 'string')) &&
 			   ((typeof(auth?.password) === 'string')))) {
+			debug('Malformed auth data');
 			return undefined;
 		}
 		let u = context.users.get(auth.user) ?? context.users.get('*');
 		if (! u) {
+			debug('Unknown user');
 			return undefined;
 		}
 		if (u && ((! u.password) || (auth.password === u.password))) {
+			debug(`Auth ok for ${auth.user}`);
 			return {
 				user: auth.user,
 				user_password_set: ((u.password && u.password.length) ? true : false),
@@ -267,6 +350,7 @@ module.exports = function() {
 				ttl: u.ttl
 			};
 		}
+		debug('Invalid auth data');
 		return undefined;
 	}
 
@@ -390,6 +474,10 @@ module.exports = function() {
 		delete r.res;
 		noCache(res);
 		r.auth = r.headers.authorization ? parseBasicAuth(r.headers.authorization) : undefined;
+		debug('url:', r.url)
+		debug('method:', r.method)
+		debug('params:', r.params)
+		debug('auth:', r.auth)
 		switch (r.url) {
 		case '/token':
 			r.user = validateUserAuth(r.auth);
