@@ -42,7 +42,7 @@ module.exports = function() {
 	}
 
 	function log(...av) {
-        console.log((ts() + ':'), ...av);
+		console.log((ts() + ':'), ...av);
 	}
 
 	function debug(...av) {
@@ -624,6 +624,15 @@ module.exports = function() {
 			break;
 		case '/authorize':
 			{
+				let action;
+				switch (r.params.action) {
+				case 'login':
+				case 'cancel':
+					action = r.params.action;
+					break;
+				default:
+					action = null;
+				}
 				if (! context.clients) {
 					error(res, 404, 'Resource not found.');
 					return;
@@ -653,6 +662,16 @@ module.exports = function() {
 				}
 				if (! (r.params.state && (typeof(r.params.state) === 'string'))) {
 					error(res, 400, 'Invalid request parameter (state)');
+					return;
+				}
+				if (action === 'cancel') {
+					let redirect = (r.params.redirect_uri +
+									'?' +
+									qs.stringify({ cancel: 'true' }));
+					res.writeHead(302, { 'Content-Type': 'text/html; charset=utf-8',
+										 'Location': redirect,
+										 'Connection': 'close' });
+					res.end();
 					return;
 				}
 				if (((r.params.username && (typeof(r.params.username) === 'string')) &&

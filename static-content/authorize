@@ -136,8 +136,8 @@
         <input type="hidden" id="state" name="state" value="{{state}}">
         <!-- Button Group with Cancel and Login buttons -->
         <div class="button-group">
-          <button type="button" id="cancelButton" class="cancel">Cancel</button>
-          <button type="submit" id="loginButton" class="login" disabled>Login</button>
+          <button type="submit" id="cancelButton" name="action" class="cancel" value="cancel">Cancel</button>
+          <button type="submit" id="loginButton" name="action" class="login" value="login" disabled>Login</button>
         </div>
       </form>
     </div>
@@ -180,10 +180,8 @@
       document.getElementById('closeError').addEventListener('click', function() {
         document.getElementById('errorModal').style.display = "none";
       });
-  
-      // Cancel button now shows an alert notifying that the login was cancelled.
       document.getElementById('cancelButton').addEventListener('click', function() {
-        alert("Login cancelled");
+        document.getElementById('errorModal').style.display = "none";
       });
   
       const loginForm = document.getElementById('loginForm');
