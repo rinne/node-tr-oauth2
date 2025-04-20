@@ -452,7 +452,8 @@ module.exports = function() {
 		return false;
 	}
 
-	function createToken(user, client) {
+	function createToken(user, client, extraClaims) {
+		debug('createToken', user, client, extraClaims);
 		let now = Math.floor(Date.now() / 1000);
 		let data = {
 			sub: user.username,
@@ -465,6 +466,15 @@ module.exports = function() {
 			jti: crypto.randomUUID(),
 			client_id: client.client_id
 		};
+		if (extraClaims) {
+			for (let c of Object.keys(data)) {
+				if (c in extraClaims) {
+					debug(`Extra claims can't shadow basic claim ${c}`);
+					return undefined;
+				}
+			}
+			Object.assign(data, extraClaims);
+		}
 		if (user.email) {
 			data.email = user.email;
 		} else {
@@ -520,7 +530,9 @@ module.exports = function() {
 			   Number.isSafeInteger(data?.exp) &&
 			   ((data?.email === undefined) || (data?.email && (typeof(data.email) === 'string'))) &&
 			   ((data?.iss === undefined) || (data?.iss && (typeof(data.iss) === 'string'))) &&
-			   ((data?.scope === undefined) || isArrayOfStrings(data.scope)))) {
+			   ((data?.scope === undefined) || isArrayOfStrings(data.scope)) &&
+			   ((data?.rjti === undefined) || (data?.rjti && (typeof(data.rjti) === 'string'))) &&
+			   ((data?.rgen === undefined) || (Number.isSafeInteger(data.rgen) && (data.rgen >= 0))))) {
 			debug('Invalid token payload');
 			return undefined;
 		}
@@ -627,6 +639,7 @@ module.exports = function() {
 					return;
 				}
 				let user;
+				let extraClaims = {};
 				switch (r.params.grant_type) {
 				case 'password':
 					if (! clientAuth) {
@@ -659,6 +672,11 @@ module.exports = function() {
 					// expand the scope, a new token must be created
 					// using password grant.
 					user.scope = tokenData.scope;
+					// We'll track the token ancestry.
+					debug('ec1', extraClaims);
+					extraClaims.rjti = tokenData.rjti ?? tokenData.jti;
+					extraClaims.rgen = tokenData.rgen ? tokenData.rgen + 1 : 1;
+					debug('ec1', extraClaims);
 					break;
 				default:
 					error(res, 400, 'Internal error');
@@ -690,9 +708,13 @@ module.exports = function() {
 					error(res, 400, 'Invalid authentication data');
 					return;
 				}
-
 				debug(`User ${user.username} authenticated. Creating token.`);
-				let token = createToken(user, client);
+				let token = createToken(user, client, extraClaims);
+				if (! token) {
+					debug(`Token creation failed.`);
+					error(res, 500, 'Internal error');
+					return;
+				}
 				rd = {
 					access_token: token.token,
 					token_type: 'Bearer',
@@ -784,17 +806,21 @@ module.exports = function() {
 						if (user.scope) {
 							debug(`User ${user.username} authenticated. Creating token.`);
 							let token = createToken(user, client);
-							let redirect = (r.params.redirect_uri +
-											'?' +
-											qs.stringify({ access_token: token.token,
-														   token_type: 'Bearer',
-														   expires_in: token.expires_in,
-														   state: r.params.state }));
-							res.writeHead(302, { 'Content-Type': 'text/html; charset=utf-8',
-												 'Location': redirect,
-												 'Connection': 'close' });
-							res.end();
-							return;
+							if (token) {
+								let redirect = (r.params.redirect_uri +
+												'?' +
+												qs.stringify({ access_token: token.token,
+															   token_type: 'Bearer',
+															   expires_in: token.expires_in,
+															   state: r.params.state }));
+								res.writeHead(302, { 'Content-Type': 'text/html; charset=utf-8',
+													 'Location': redirect,
+													 'Connection': 'close' });
+								res.end();
+								return;
+							} else {
+								debug(`Token creation failed.`);
+							}
 						}
 					} else {
 						debug(`Authentication fails for ${auth?.user}`);
