@@ -1,2 +1,3 @@
-client_id;client_secret;redirect_uri
-test;;https://my.example.tld/land-back-page
+client_id;client_secret;ttl;redirect_uri
+paavi;;86400;https://timo.rinne.ws/p
+scoopshot;zzz;2592000;scoopshot://auth-callback

@@ -19,7 +19,9 @@ function csvRead(filename, spec) {
 		throw new TypeError('Bad key');
 	}
 	for (let k of Object.keys(spec.fields)) {
-		if (! (spec.fields[k] && (typeof(spec.fields[k]) === 'object'))) {
+		if (! (spec.fields[k] && 
+			   (['#linenumber'].includes(spec.fields[k]) ||
+				(typeof(spec.fields[k]) === 'object')))) {
 			throw new TypeError('Bad field spec for ${key}');
 		}
 	}
@@ -32,12 +34,16 @@ function csvRead(filename, spec) {
 					 .on('data', function(row) {
 						 let pr = {};
 						 for (let k of Object.keys(spec.fields)) {
-							 if (row[k] === undefined) {
+							 if (spec.fields[k] === '#linenumber') {
+								 pr[k] = line;
+							 } else if (row[k] === undefined) {
 								 if (spec.fields[k].optional) {
-									 pr[k] = null;
+									 pr[k] = (spec.fields[k].emptyValue !== undefined) ? spec.fields[k].emptyValue : null;
 								 } else {
 									 throw new Error(`Missing field ${k}`);
 								 }
+							 } else if ((row[k] === '') && (spec.fields[k].emptyValue !== undefined)) {
+								 pr[k] = spec.fields[k].emptyValue;
 							 } else {
 								 pr[k] = row[k];
 								 if (spec.fields[k].validator) {

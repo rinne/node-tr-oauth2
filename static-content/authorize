@@ -18,7 +18,7 @@
     .container {
       display: flex;
       justify-content: center;
-      align-items: center;
+      align-items: start; // Change this to center if you wish the box to be in the center also vertically.
       height: 100%;
       padding: 10px;
     }

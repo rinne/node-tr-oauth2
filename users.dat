@@ -1,4 +1,5 @@
-username;password;totp;authorities;scope;ttl
-admin;verysecret;ZZZZZZZZZZZZZZZZ;AUTHENTICATED_CLIENT,SUPERUSER;*;
-test;;UNVERIFIED_CLIENT;TEST;60
-*;;UNIDENTIFIED_CLIENT;;60
+username;email;password;totp;scope
+46ee8cc9-180e-4513-af2e-a917c6f6cc45;tri@iki.fi;kukkuureset42;;photographer
+cefb8ad8-ae09-46cc-aa4e-519236f690d2;trix@iki.fi;salasana;;
+a@b.cc;aa@b.cc;salasana;;
+z@b.cc;z@b.cc;salasana;;

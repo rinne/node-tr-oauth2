@@ -15,6 +15,7 @@ module.exports = function() {
 	const userFileRead = require('./userfileread');
 	const clientFileRead = require('./clientfileread');
 	const template = require('./template');
+	const validators = require('./validators');
 
 	/*
 	  If tokens must remain valid over restart, define secret as a random
@@ -26,9 +27,10 @@ module.exports = function() {
 	var context = {
 		debug: false,
 		users: new Map(),
+		emails: new Map(),
 		clients: null,
-		jtRevocation: new Map(),
-		jtLogout: new Map(),
+		revocations: new Map(),
+		logouts: new Map(),
 		jwtConf: {},
 		staticContent: new Map(),
 	};
@@ -106,6 +108,12 @@ module.exports = function() {
 						 defaultValue: '80',
 						 environment: 'TR_OAUTH2_OPT_LISTEN_PORT',
 						 optArgCb: ou.integerWithLimitsCbFactory(1, 65535) },
+					   { longName: 'allow-empty-password',
+						 description: 'Allow empty password.',
+						 environment: 'TR_OAUTH2_OPT_ALLOW_EMPTY_PASSWORD' },
+					   { longName: 'allow-empty-scope',
+						 description: 'Allow empty scope.',
+						 environment: 'TR_OAUTH2_OPT_ALLOW_EMPTY_SCOPE' },
 					   { longName: 'token-ttl',
 						 description: 'Default validity time for tokens in seconds.',
 						 hasArg: true,
@@ -115,7 +123,6 @@ module.exports = function() {
 					   { longName: 'token-issuer',
 						 description: 'Issuer name to be included into tokens.',
 						 hasArg: true,
-						 defaultValue: 'anonymous',
 						 environment: 'TR_OAUTH2_OPT_TOKEN_ISSUER',
 						 optArgCb: ou.nonEmptyCb },
 					   { longName: 'users-file',
@@ -128,7 +135,8 @@ module.exports = function() {
 						 description: 'CSV file containing clients data.',
 						 hasArg: true,
 						 environment: 'TR_OAUTH2_OPT_CLIENTS_FILE',
-						 optArgCb: ou.existingFileNameCb },
+						 optArgCb: ou.existingFileNameCb,
+						 required: true },
 					   { longName: 'secret-key-file',
 						 description: 'Read token signing key from file.',
 						 hasArg: true,
@@ -160,15 +168,14 @@ module.exports = function() {
 	context.debug = opt.value('debug') ? true : false;
 	if (context.debug) {
 		process.on("SIGUSR1", function() { debug('users:', context.users);
+										   debug('emails:', context.users);
 										   debug('clients:', context.clients);
-										   debug('revocation:', context.jtRevocation);
-										   debug('logout:', context.jtLogout); });
+										   debug('revocation:', context.revocations);
+										   debug('logout:', context.logouts); });
 	}
 
 	(function() {
 
-		context.jwtConf.issuer = opt.value('token-issuer');
-		context.jwtConf.defaultTTL = opt.value('token-ttl');
 		if (opt.value('secret-key-file')) {
 			try {
 				context.jwtConf.secretKey = opt.value('secret-key-file');
@@ -210,26 +217,34 @@ module.exports = function() {
 			context.jwtConf.secret = crypto.randomBytes(66).toString('base64');
 		}
 		try {
-			(function(t, a, b) {
-				a = { iss: context.jwtConf.issuer,
-					  iat: Math.floor(Date.now() / 1000) - 60,
-					  exp: Math.floor(Date.now() / 1000) + 60,
-					  jti: crypto.randomUUID() };
-				t = jwt.sign(a,
-							 context.jwtConf.secret ? context.jwtConf.secret : context.jwtConf.secretKey,
-							 { algorithm: context.jwtConf.algorithm } );
-				if (! t) {
-					throw new Error('Unusable secret key');
-				}
-				b = jwt.verify(t,
-							   context.jwtConf.secret ? context.jwtConf.secret : context.jwtConf.publicKey,
-							   { algorithms: [ context.jwtConf.algorithm ] } );
-				if (! (b && (b.iss === a.iss) && (b.jti === a.jti))) {
-					throw new Error('Unusable public key');
-				}
-				context.jtRevocation.set(a.jti, a.exp);
-			})(null, null, null);
+			// Try to create a dummy token to test that keys are ok.
+			let user = {
+				'#': 1,
+				username: crypto.randomUUID(),
+				email: crypto.randomUUID() + '@' + crypto.randomUUID() + '.com',
+				password: crypto.randomUUID(),
+				scope: new Set([crypto.randomUUID()]),
+				totp: null
+			};
+			let client = {
+				client_id: crypto.randomUUID(),
+				client_secret: null,
+				ttl: 30,
+				redirect_uri: 'none://none'
+			};
+			let _users = context.users;
+			let _clients = context.clients;
+			context.users = new Map();
+			context.clients = new Map();
+			context.users.set(user.username, user);
+			context.clients.set(client.client_id, client);
+			let created = createToken(user, client);
+			let decoded = validateToken(created.token);
+			revokeToken(decoded.jti, decoded.exp);
+			context.users = _users;
+			context.clients = _clients;
 		} catch (e) {
+			console.log(e);
 			jwt.secret = undefined;
 			context.jwtConf.secretKey = undefined;
 			context.jwtConf.publicKey = undefined;
@@ -237,11 +252,11 @@ module.exports = function() {
 		}
 		if (! context.jwtConf.algorithm) {
 			console.error('Invalid symmetric secret or public key pair');
-			process.error(1);
+			process.exit(1);
 		}
 		if (! readStaticContent()) {
 			console.log('Unable to read static content');
-			process.error(1);
+			process.exit(1);
 		}
 		return (Promise.resolve()
 				.then(function() {
@@ -249,14 +264,12 @@ module.exports = function() {
 					return userFileRead(opt.value('users-file'));
 				})
 				.then(function(ret) {
-					context.users = ret;
+					context.users = ret[0];
+					context.emails = ret[1];
 				})
 				.then(function() {
-					if (opt.value('clients-file')) {
-						fs.watch(opt.value('clients-file'), updateClients);
-						return clientFileRead(opt.value('clients-file'));
-					}
-					return null;
+					fs.watch(opt.value('clients-file'), updateClients);
+					return clientFileRead(opt.value('clients-file'));
 				})
 				.then(function(ret) {
 					context.clients = ret;
@@ -273,7 +286,7 @@ module.exports = function() {
 					context.server.listen(opt.value('listen-port'), opt.value('listen-address'));
 				})
 				.then(function() {
-					context.interval = setInterval(intervalCb, 10000);
+					context.interval = setInterval(intervalCb, 900000);
 				})
 				.then(function() {
 					log(`OAUTH2 server is running in ${opt.value('listen-address')}:${opt.value('listen-port')}`);
@@ -285,11 +298,13 @@ module.exports = function() {
 
 	function intervalCb() {
 		let now = Math.floor(Date.now() / 1000);
-		context.jtRevocation.forEach(function(exp, jti, map) {
+		debug('Checking revocations');
+		for (let [ jti, exp ] of context.revocations) {
 			if ((exp + 900)  < now) {
-				map.delete(jti);
+				debug(`Revoked token ${jti} already expired`);
+				context.revocations.delete(jti);
 			}
-		});
+		}
 	}
 
 	function updateUsers(ev, fn) {
@@ -297,13 +312,17 @@ module.exports = function() {
 			try {
 				delay(1000);
 				debug('Updating users');
-				let u = await userFileRead(opt.value('users-file'));
+				let r = await userFileRead(opt.value('users-file'));
+/*
+				// Handle revocations of changed records here XXXXX
 				for (let n of context.users.keys()) {
 					if (! u.has(n)) {
 						context.jtLogout.set(n, Math.floor(Date.now() / 1000));
 					}
 				}
-				context.users = u;
+*/
+				context.users = r[0];
+				context.emails = r[1];
 			} catch (e) {
 				fatal(e);
 			}
@@ -311,9 +330,6 @@ module.exports = function() {
 	}
 
 	function updateClients(ev, fn) {
-		if (! opt.value('clients-file')) {
-			return;
-		}
 		(async function() {
 			try {
 				delay(1000);
@@ -331,45 +347,42 @@ module.exports = function() {
 		})();
 	}
 
-	function validateUserAuth(auth) {
+	function validateUserAuth(auth, client) {
 		if (! (context?.users &&
 			   ((typeof(auth?.user) === 'string')) &&
 			   ((typeof(auth?.password) === 'string')))) {
 			debug('Malformed auth data');
 			return undefined;
 		}
-		let u = context.users.get(auth.user) ?? context.users.get('*');
-		if (! u) {
-			debug('Unknown user');
-			return undefined;
-		}
-		if (u && ((! u.password) || (auth.password === u.password))) {
-			debug(`Auth ok for ${auth.user}`);
-			return {
-				user: auth.user,
-				user_password_set: ((u.password && u.password.length) ? true : false),
-				scope: u.scope,
-				authorities: u.authorities,
-				ttl: u.ttl
-			};
+		const u = context.users.get(auth.user) ?? context.users.get(context.emails.get(auth.user));
+		if (u && (((! u.password) && opt.value('allow-empty-password')) || (u.password && (auth.password === u.password)))) {
+			debug(`Auth ok for login ${auth.user} => user ${u.username}`);
+			let r = Object.assign({}, u);
+			delete r['#'];
+			return r;
 		}
 		debug('Invalid auth data');
 		return undefined;
 	}
 
 	function parseBasicAuth(s) {
-		let m, b;
-		if ((typeof(s) !== 'string') ||
-			(! (m = s.match(/^\s*Basic\s+([0-9A-Za-z\+\\]+={0,2})\s*/)))) {
+		try {
+			let m, b;
+			if ((typeof(s) !== 'string') ||
+				(! (m = s.match(/^\s*Basic\s+([0-9A-Za-z\+\\]+={0,2})\s*/)))) {
+				return undefined;
+			}
+			if (! Buffer.isBuffer(b = Buffer.from(m[1], 'base64'))) {
+				return undefined;
+			}
+			if (! (m = b.toString('utf8').match(/^([^:]*):(.*)$/))) {
+				return undefined;
+			}
+			return { user: m[1], password: m[2] };
+		} catch (e) {
+			console.error(e);
 			return undefined;
 		}
-		if (! Buffer.isBuffer(b = Buffer.from(m[1], 'base64'))) {
-			return undefined;
-		}
-		if (! (m = b.toString('utf8').match(/^([^:]*):(.*)$/))) {
-			return undefined;
-		}
-		return { user: m[1], password: m[2] };
 	}
 
 	function noCache(res) {
@@ -403,23 +416,72 @@ module.exports = function() {
 		res.end();
 	}
 
-	function createToken(user) {
+	function isRevoked(d) {
+		now = Math.floor(Date.now() / 1000);
+		if (! ((d?.sub && (typeof(d.sub) === 'string')) &&
+			   (d?.jti && (typeof(d.jti) === 'string')) &&
+			   Number.isSafeInteger(d?.iat))) {
+			debug('Declaring token revoked because bad sub, jti, or iat');
+			return true;
+		}
+		if (context.revocations.has(d.jti)) {
+			debug(`Token ${d.jti} is revoked`);
+			return true;
+		}
+		let logout = context.logout.get(d.sub);
+		if (logout && (logout >= d.iat)) {
+			debug(`Token ${d.jti} is revoked because user ${d.sub} was logged out at ${logout} and token issued at ${d.iat}`);
+			return true;
+		}
+		return false;
+	}
+
+	function revokeToken(jti, exp) {
+		if (jti) {
+			context.revocations.set(jti, exp ?? null);
+			return true;
+		}
+		return false;
+	}
+
+	function logoutUset(username) {
+		if (username) {
+			context.logouts.set(username, Math.floor(Date.now() / 1000));
+			return true;
+		}
+		return false;
+	}
+
+	function createToken(user, client) {
 		let now = Math.floor(Date.now() / 1000);
 		let data = {
-			iss: context.jwtConf.issuer,
+			sub: user.username,
+			email: null,
+			iss: null,
 			kid: null,
 			iat: now,
-			exp: now + (user.ttl ?? context.jwtConf.defaultTTL),
-			scope: Array.from(user.scope ?? []),
-			authorities: Array.from(user.authorities ?? []),
+			exp: now + (user.ttl ?? client.ttl ?? opt.value('token-ttl')),
+			scope: Array.from(user.scope),
 			jti: crypto.randomUUID(),
-			client_id: user.user
+			client_id: client.client_id
 		};
+		if (user.email) {
+			data.email = user.email;
+		} else {
+			let email = validators.validateEmail(user.username);
+			if (email) {
+				data.email = email;
+			} else {
+				delete data.email;
+			}
+		}
 		if (data.scope.length < 1) {
 			delete data.scope;
 		}
-		if (data.authorities.length < 1) {
-			delete data.authorities;
+		if (opt.value('token-issuer')) {
+			data.iss = opt.value('token-issuer');
+		} else {
+			delete data.iss;
 		}
 		if (context.jwtConf.keyId) {
 			data.kid = context.jwtConf.keyId;
@@ -437,6 +499,7 @@ module.exports = function() {
 	}
 
 	function validateToken(token) {
+		debug('validateToken:', token);
 		let now = Math.floor(Date.now() / 1000);
 		let data;
 		try {
@@ -446,27 +509,50 @@ module.exports = function() {
 							   context.jwtConf.publicKey),
 							  { algorithms: [ context.jwtConf.algorithm ] } );
 		} catch (e) {
-			data = undefined;
-		}
-		if (! (data &&
-			   (typeof(data) === 'object') &&
-			   data.iat && (typeof(data.iat) === 'number') && (data.iat <= now) &&
-			   data.exp && (typeof(data.exp) === 'number') && (data.exp >= now) &&
-			   (data.iss === context.jwtConf.issuer) &&
-			   data.jti && (typeof(data.jti) === 'string') && (! context.jtRevocation.has(data.jti)) &&
-			   data.client_id && (typeof(data.client_id) === 'string') &&
-			   ((! context.jtLogout.has(data.client_id)) ||
-				(data.iat > context.jtLogout.get(data.client_id))))) {
+			console.log(e);
+			debug('Invalid token');
 			return undefined;
 		}
-		if (typeof(data.scope) === 'string') {
-			data.scope = new Set([ data.scope ]);
-		} else if (data.scope === undefined) {
-			data.scope = new Set();
-		} else if (isArrayOfStrings(data.scope)) {
-			data.scope = new Set(data.scope);
-		} else {
+		if (! ((data?.sub && (typeof(data.sub) === 'string')) &&
+			   (data?.jti && (typeof(data.jti) === 'string')) &&
+			   (data?.client_id && (typeof(data.client_id) === 'string')) &&
+			   Number.isSafeInteger(data?.iat) &&
+			   Number.isSafeInteger(data?.exp) &&
+			   ((data?.email === undefined) || (data?.email && (typeof(data.email) === 'string'))) &&
+			   ((data?.iss === undefined) || (data?.iss && (typeof(data.iss) === 'string'))) &&
+			   ((data?.scope === undefined) || isArrayOfStrings(data.scope)))) {
+			debug('Invalid token payload');
 			return undefined;
+		}
+		let client = context.clients.get(data.client_id);
+		if (! client) {
+			debug(`Token client ${data.client_id} is no longer valid`);
+			return undefined;
+		}
+		let user = context.users.get(data.sub);
+		if (! user) {
+			debug(`Token user ${data.user} is no longer valid`);
+			return undefined;
+		}
+		if ((data.iss || opt.value('token-issuer')) && (data.iss !== opt.value('token-issuer'))) {
+			debug('Token issuer mismatch');
+			return undefined;
+		}
+		if (data.exp < now) {
+			debug('Token expired');
+			return undefined;
+		}
+		if ((data.iat - 60) > now) {
+			debug('Token issued in the future -> revoking it');
+			revokeToken(data.jti, data.exp);
+			return undefined;
+		}
+		data.scope = data.scope ? new Set(data.scope) : new Set();
+		for (let s of data.scope) {
+			if (! user.scope.has(s)) {
+				debug(`User ${data.user} is no longer has token scope ${s}`);
+				return undefined;
+			}
 		}
 		return data;
 	}
@@ -476,136 +562,40 @@ module.exports = function() {
 		let res = r.res, rd = {}, token, user;
 		delete r.res;
 		noCache(res);
-		r.auth = r.headers.authorization ? parseBasicAuth(r.headers.authorization) : undefined;
+		let client = undefined;
+		let clientAuth = false;
+		{
+			let client_id, client_secret;
+			if (r.headers.authorization) {
+				let ba = parseBasicAuth(r.headers.authorization);
+				if (ba) {
+					client_id = ba.user;
+					client_secret = ba.password;
+				}
+			}
+			if (r.params.client_id) {
+				client_id = r.params.client_id;
+			}
+			if (r.params.client_secret) {
+				client_secret = r.params.client_secret;
+			}
+			if (! (client_id && (typeof(client_id) === 'string') && context.clients.has(client_id))) {
+				client_id = undefined;
+			}
+			if (client_id) {
+				client = context.clients.get(client_id);
+				if (client && ((! client.client_secret) || (client_secret === client.client_secret))) {
+					clientAuth = true;
+				}
+			}
+		}
 		debug('url:', r.url)
 		debug('method:', r.method)
 		debug('params:', r.params)
-		debug('auth:', r.auth)
+		debug('client:', client)
+		debug('clientAuth:', clientAuth)
+
 		switch (r.url) {
-		case '/token':
-			r.user = validateUserAuth(r.auth);
-			if (! r.user) {
-				res.setHeader('WWW-Authenticate', 'Basic realm="OAUTH2/' + context.jwtConf.issuer + '"');
-				error(res, 401,
-					  'Valid authentication is required to access this resource.',
-					  'invalid_client');
-				return;
-			}
-			if (r.params.grant_type !== 'client_credentials') {
-				error(res, 400,
-					  'Invalid grant_type (only client_credentials allowed).',
-					  'unsupported_grant_type');
-				return;
-			}
-			if (r.params.scope) {
-				if ((r.params.scope === '*') ||
-					(! (r.user.scope.has(r.params.scope) ||
-						r.user.scope.has('*')))) {
-					error(res, 403,
-						  'Scope invalid, unknown, malformed or exceeds what can be granted.',
-						  'invalid_scope');
-					return;
-				}
-				r.user.scope = new Set([ r.params.scope ]);
-			} else {
-				r.user.scope = new Set();
-			}
-			token = createToken(r.user);
-			rd = {
-				access_token: token.token,
-				token_type: 'bearer',
-				expires_in: token.exp - Math.ceil(Date.now() / 1000),
-				scope: Array.from(r.user.scope),
-				authorities: r.user.authorities,
-				jti: token.jti
-			};
-			break;
-		case '/check_token':
-			if (! (r.params.token &&
-				   (typeof(r.params.token) === 'string') &&
-				   r.params.token.length)) {
-				error(res, 400, 'Parameter token must exist and be a string.');
-				return;
-			}
-			if (token = validateToken(r.params.token)) {
-				rd = {
-					active: true
-				};
-				rd = Object.assign(rd, token);
-			} else {
-				rd = { active: false };
-			}
-			break;
-		case '/revoke_all':
-			r.user = validateUserAuth(r.auth);
-			if (! r.user) {
-				res.setHeader('WWW-Authenticate', 'Basic realm="oauth2/client"');
-				error(res, 401,
-					  'Valid authentication is required to access this resource.',
-					  'invalid_client');
-				return;
-			}
-			if (! (r.params.client_id &&
-				   (typeof(r.params.client_id) === 'string') &&
-				   r.params.client_id.length)) {
-				error(res, 400,
-					  'Parameter client_id must exist and be a string.',
-					  'invalid_request');
-				return;
-			}
-			if (r.params.client_id !== r.user.user) {
-				error(res, 403,
-					  'Authenticated user does not match to the client_id.',
-					  'invalid_client');
-				return;
-			}
-			if (! r.user.user_password_set) {
-				error(res, 403,
-					  'Users with no password set, can revoke only individual tokens.',
-					  'invalid_client');
-				return;
-			}
-			context.jtLogout.set(r.params.client_id, Math.floor(Date.now() / 1000));
-			rd = {
-				active: false,
-				client_id: r.params.client_id
-			};
-			break;
-		case '/revoke_token':
-			r.user = validateUserAuth(r.auth);
-			if (! r.user) {
-				res.setHeader('WWW-Authenticate', 'Basic realm="oauth2/client"');
-				error(res, 401,
-					  'Valid authentication is required to access this resource.',
-					  'invalid_client');
-				return;
-			}
-			if (! (r.params.token &&
-				   (typeof(r.params.token) === 'string') &&
-				   r.params.token.length)) {
-				error(res, 400,
-					  'Parameter token must exist and be a string.',
-					  'invalid_request');
-				return;
-			}
-			if (! (token = validateToken(r.params.token))) {
-				error(res, 403,
-					  'Token is invalid, expired, or revoked.',
-					  'invalid_grant');
-				return;
-			}
-			if (token.client_id !== r.user.user) {
-				error(res, 403,
-					  'Token is was issued to another client',
-					  'invalid_grant');
-				return;
-			}
-			context.jtRevocation.set(token.jti, token.exp);
-			rd = {
-				active: false,
-				jti: token.jti
-			};
-			break;
 		case '/keys':
 			if (! ['GET'].includes(r.method)) {
 				error(res, 405, 'Only GET is allowed.', 'invalid_request');
@@ -622,10 +612,122 @@ module.exports = function() {
 							  } );
 			}
 			break;
+		case '/token':
+			{
+				if (! client) {
+					error(res, 400, 'Invalid client');
+					return;
+				}
+				if (! [ 'password', 'refresh_token' ].includes(r.params.grant_type)) {
+					error(res, 400, 'Invalid grant type');
+					return;
+				}
+				if (! (typeof(r.params.scope) === 'string')) {
+					error(res, 400, 'Invalid scope');
+					return;
+				}
+				let user;
+				switch (r.params.grant_type) {
+				case 'password':
+					if (! clientAuth) {
+						error(res, 400, 'Invalid client');
+						return;
+					}
+					if (! ((r.params.username && (typeof(r.params.username) === 'string')) &&
+						   (r.params.password && (typeof(r.params.password) === 'string')))) {
+						error(res, 400, 'Invalid authentication data');
+						return;
+					}
+					let auth = { user: r.params.username, password: r.params.password };
+					user = validateUserAuth(auth, client);
+					break;
+				case 'refresh_token':
+					if (! (r.params.refresh_token && (typeof(r.params.refresh_token) === 'string'))) {
+						error(res, 400, 'Invalid authentication data');
+						return;
+					}
+					let tokenData = validateToken(r.params.refresh_token);
+					if (! tokenData) {
+						error(res, 400, 'Invalid authentication data');
+						return;
+					}
+					user = context.users.get(tokenData.sub);
+					// We will override the user token with the one
+					// from the token (which is a subset of the user
+					// scope). Scope can only be the same or reduced
+					// from the token when refreshing. In order to
+					// expand the scope, a new token must be created
+					// using password grant.
+					user.scope = tokenData.scope;
+					break;
+				default:
+					error(res, 400, 'Internal error');
+					return;
+				}
+				if (! user) {
+					error(res, 400, 'Invalid authentication data');
+					return;
+				}
+				if (r.params.scope) {
+					let scope = new Set();
+					for (let s of new Set(r.params.scope.split(/[\s,]+/).filter(s=>((!!s) && (s!==','))).sort())) {
+						if (! (user.scope.has(s) || user.scope.has('*'))) {
+							debug(`Requested scope ${s} not allowed for ${user.username}`);
+							scope = undefined;
+							break;
+						}
+						scope.add(s);
+					}
+					user.scope = scope;
+				} else if (opt.value('allow-empty-scope')) {
+					debug(`Allowing empty scope for ${user.username}`);
+					user.scope = new Set();
+				} else {
+					debug(`Not allowing empty scope for ${user.username}`);
+					user.scope =  undefined;
+				}
+				if (! user.scope) {
+					error(res, 400, 'Invalid authentication data');
+					return;
+				}
+
+				debug(`User ${user.username} authenticated. Creating token.`);
+				let token = createToken(user, client);
+				rd = {
+					access_token: token.token,
+					token_type: 'Bearer',
+					expires_in: token.exp - Math.floor(Date.now() / 1000),
+					scope: Array.from(user.scope).join(' ')
+				};
+				break;
+			}
+		case '/check_token':
+			{
+				if (! clientAuth) {
+					error(res, 400, 'Invalid client');
+					return;
+				}
+				if (! (r.params.token && (typeof(r.params.token) === 'string'))) {
+					error(res, 400, 'Parameter token must exist and be a string.');
+					return;
+				}
+				if (token = validateToken(r.params.token)) {
+					rd = {
+						active: true
+					};
+					rd = Object.assign(rd, token);
+					if (rd.scope) {
+						rd.scope = Array.from(rd.scope);
+					}
+				} else {
+					rd = { active: false };
+				}
+				break;
+			}
 		case '/authorize':
 			{
-				if (! context.clients) {
-					error(res, 404, 'Resource not found.');
+				if (! client) {
+					error(res, 400, 'Invalid client');
 					return;
 				}
 				let content = context.staticContent.get('authorize')
@@ -635,10 +737,6 @@ module.exports = function() {
 				}
 				if (! (r.params.response_type === 'code')) {
 					error(res, 400, 'Invalid request parameter (response_type)');
-					return;
-				}
-				if (! (r.params.client_id && (typeof(r.params.client_id) === 'string'))) {
-					error(res, 400, 'Invalid request parameter (client_id)');
 					return;
 				}
 				if (! (r.params.redirect_uri &&
@@ -657,29 +755,35 @@ module.exports = function() {
 				}
 				if (((r.params.username && (typeof(r.params.username) === 'string')) &&
 					 (r.params.password && (typeof(r.params.password) === 'string')))) {
-					let client = context.clients.get(r.params.client_id);
-					if (! client) {
-						error(res, 403, 'Invalid client');
-						return;
-					}
 					if (client.redirect_uri !== r.params.redirect_uri) {
 						error(res, 403, 'Invalid redirect for client');
 						return;
 					}
 					let auth = { user: r.params.username, password: r.params.password };
-					let user = validateUserAuth(auth);
+					let user = validateUserAuth(auth, client);
 					if (user) {
+						console.log(user);
 						if (r.params.scope) {
-							if ((r.params.scope !== '*') && ((user.scope.has(r.params.scope) || user.scope.has('*')))) {
-								user.scope = new Set([ r.params.scope ]);
-							} else {
-								user.scope = undefined;
+							let scope = new Set();
+							for (let s of new Set(r.params.scope.split(/[\s,]+/).filter(s=>((!!s) && (s!==','))).sort())) {
+								if (! (user.scope.has(s) || user.scope.has('*'))) {
+									debug(`Requested scope ${s} not allowed for ${user.username}`);
+									scope = undefined;
+									break;
+								}
+								scope.add(s);
 							}
-						} else {
+							user.scope = scope;
+						} else if (opt.value('allow-empty-scope')) {
+							debug(`Allowing empty scope for ${user.username}`);
 							user.scope = new Set();
+						} else {
+							debug(`Not allowing empty scope for ${user.username}`);
+							user.scope =  undefined;
 						}
 						if (user.scope) {
-							let token = createToken(user);
+							debug(`User ${user.username} authenticated. Creating token.`);
+							let token = createToken(user, client);
 							let redirect = (r.params.redirect_uri +
 											'?' +
 											qs.stringify({ access_token: token.token,
@@ -692,6 +796,8 @@ module.exports = function() {
 							res.end();
 							return;
 						}
+					} else {
+						debug(`Authentication fails for ${auth?.user}`);
 					}
 				}
 				let subs = new Map([ [ 'username', r.params.username ?? null ],

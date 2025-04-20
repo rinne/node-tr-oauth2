@@ -51,17 +51,6 @@ function validateRegExpFactory(options) {
 	}
 }
 
-function validateCsl(s) {
-	if (! (typeof(s) === 'string')) {
-		return undefined;
-	}
-	s = s.split(/\s*,\s*/);
-	if ((s.length == 1) && (s[0] === '')) {
-		s = [];
-	}
-	return s;
-}
-
 function validateCslFactory(options) {
 	options = Object.assign({}, options);
 	if ((options.validator === undefined) || (options.validator === null)) {
@@ -69,11 +58,16 @@ function validateCslFactory(options) {
 	} else if (typeof(options.validator) !== 'function') {
 		throw new TypeError('CSL validator not a function');
 	}
+	if ((options.separator === undefined) || (options.separator === null)) {
+		options.separator = /\s*,\s*/;
+	} else if (! ((typeof(options.separator) === 'string') || (options.separator instanceof RegExp))) {
+		throw new TypeError('CSL validator not a function');
+	}
 	return function(s) {
 		if ((options.emptyValue !== undefined) && (s === '')) {
 			return options.emptyValue;
 		}
-		s = validateCsl(s);
+		s = _validateCsl(s, options.separator);
 		if (s === undefined) {
 			return undefined;
 		}
@@ -93,6 +87,18 @@ function validateCslFactory(options) {
 		}
 		return r;
 	}
+}
+
+// Do not export this.
+function _validateCsl(s, sep) {
+	if (! (typeof(s) === 'string')) {
+		return undefined;
+	}
+	if (! ((typeof(sep) === 'string') || (sep instanceof RegExp))) {
+		return undefined;
+	}
+	s = s.split(sep).filter(s => (!!s));
+	return s;
 }
 
 // Do not export this.
@@ -120,7 +126,6 @@ function _validateInt(s, min, max) {
 
 module.exports = { validateUri,
 				   validateEmail,
-				   validateCsl,
 				   validateCslFactory,
 				   validateIntFactory,
 				   validateRegExpFactory };
