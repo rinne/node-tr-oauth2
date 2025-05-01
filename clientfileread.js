@@ -17,7 +17,14 @@ async function clientFileRead(filename) {
 													   max: 2147483647,
 													   emptyValue: null }),
 					 optional: true },
-			'redirect_uri': { validator: v.validateUri }
+			'redirect_uri': { validator: v.validateUri },
+			'allow_anonymous': { validator: v.validateBool,
+								 emptyValue: false,
+								 optional: true },
+			'anonymous_scopes': { validator: v.validateCslFactory({ validator: v.validateRegExpFactory(/^\S{1,64}$/),
+																	separator: /[\s,]+/ } ),
+								  emptyValue: new Set(),
+								  optional: true }
 		}
 	};
 	let r = await csvRead(filename, spec);

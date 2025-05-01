@@ -1,4 +1,4 @@
-client_id;client_secret;ttl;redirect_uri
-paavi;;86400;https://timo.rinne.ws/p
-scoopshot;zzz;2592000;scoopshot://auth-callback
-scoopshot-www;;86400;http://localhost:8000/callback.html
+client_id;client_secret;ttl;redirect_uri;allow_anonymous;anonymous_scopes
+paavi;;86400;https://timo.rinne.ws/p;;
+scoopshot;zzz;2592000;scoopshot://auth-callback;yes;photographer
+scoopshot-www;;86400;http://localhost:8000/callback.html;;

@@ -485,6 +485,9 @@ module.exports = function() {
 				delete data.email;
 			}
 		}
+		if (user.anonymous) {
+			data.anonymous = true;
+		}
 		if (data.scope.length < 1) {
 			delete data.scope;
 		}
@@ -532,7 +535,8 @@ module.exports = function() {
 			   ((data?.iss === undefined) || (data?.iss && (typeof(data.iss) === 'string'))) &&
 			   ((data?.scope === undefined) || isArrayOfStrings(data.scope)) &&
 			   ((data?.rjti === undefined) || (data?.rjti && (typeof(data.rjti) === 'string'))) &&
-			   ((data?.rgen === undefined) || (Number.isSafeInteger(data.rgen) && (data.rgen >= 0))))) {
+			   ((data?.rgen === undefined) || (Number.isSafeInteger(data.rgen) && (data.rgen >= 0))) &&
+			   ([ true, false, undefined ].includes(data?.anonymous)))) {
 			debug('Invalid token payload');
 			return undefined;
 		}
@@ -541,10 +545,27 @@ module.exports = function() {
 			debug(`Token client ${data.client_id} is no longer valid`);
 			return undefined;
 		}
-		let user = context.users.get(data.sub);
-		if (! user) {
-			debug(`Token user ${data.user} is no longer valid`);
-			return undefined;
+		let user;
+		if (data.anonymous) {
+			if (! client.allow_anonymous) {
+				debug(`Client ${client.client_id} no longer allows anonymous tokens`);
+				return undefined;
+			}
+			user = {
+				username: data.sub,
+				password: crypto.randomUUID(),
+				scope: client.anonymous_scopes,
+				email: null,
+				totp: null,
+				ttl: null,
+				anonymous: true
+			};
+		} else { 
+			user = context.users.get(data.sub);
+			if (! user) {
+				debug(`Token user ${data.user} is no longer valid`);
+				return undefined;
+			}
 		}
 		if ((data.iss || opt.value('token-issuer')) && (data.iss !== opt.value('token-issuer'))) {
 			debug('Token issuer mismatch');
@@ -566,6 +587,7 @@ module.exports = function() {
 				return undefined;
 			}
 		}
+		data.anonymous = (data.anonymous === true);
 		return data;
 	}
 
@@ -631,7 +653,7 @@ module.exports = function() {
 					error(res, 400, 'Invalid client');
 					return;
 				}
-				if (! [ 'password', 'refresh_token' ].includes(r.params.grant_type)) {
+				if (! [ 'anonymous', 'password', 'refresh_token' ].includes(r.params.grant_type)) {
 					error(res, 400, 'Invalid grant type');
 					return;
 				}
@@ -642,6 +664,43 @@ module.exports = function() {
 				let user;
 				let extraClaims = {};
 				switch (r.params.grant_type) {
+				case 'anonymous':
+					{
+						if (! client.allow_anonymous) {
+							error(res, 400, 'Invalid client (anonymous not allowed)');
+							return;
+						}
+						if (! r.params.scope) {
+							error(res, 400, 'Invalid client (anonymous not allowed without a scope)');
+							return;
+						}
+						let scope = new Set();
+						if (r.params.scope) {
+							for (let s of new Set(r.params.scope.split(/[\s,]+/).filter(s=>((!!s) && (s!==','))).sort())) {
+								if (! (client.anonymous_scopes.has(s) || client.anonymous_scopes.has('*'))) {
+									debug(`Requested anonymous scope ${s} not allowed for client ${client.client_id}`);
+									scope = undefined;
+									break;
+								}
+								scope.add(s);
+							}
+						}
+						if ((scope.size < 1) && (! client.anonymous_scopes.has('*'))) {
+							debug(`Anonymous not allowed without a scope for client ${client.client_id}`);
+							scope = undefined;
+							break;
+						}
+						user = {
+							username: crypto.randomUUID(),
+							password: crypto.randomUUID(),
+							scope: scope,
+							email: null,
+							totp: null,
+							ttl: null,
+							anonymous: true
+						};
+					}
+					break;
 				case 'password':
 					if (! clientAuth) {
 						error(res, 400, 'Invalid client');
@@ -665,7 +724,23 @@ module.exports = function() {
 						error(res, 400, 'Invalid authentication data');
 						return;
 					}
-					user = context.users.get(tokenData.sub);
+					if (tokenData.anonymous) {
+						user = {
+							username: tokenData.sub,
+							password: crypto.randomUUID(),
+							scope: client.anonymous_scopes,
+							email: null,
+							totp: null,
+							ttl: null,
+							anonymous: true
+						}
+					} else {
+						user = context.users.get(tokenData.sub);
+					}
+					if (! user) {
+						error(res, 400, 'Invalid authentication data');
+						return;
+					}
 					// We will override the user token with the one
 					// from the token (which is a subset of the user
 					// scope). Scope can only be the same or reduced
@@ -673,6 +748,9 @@ module.exports = function() {
 					// expand the scope, a new token must be created
 					// using password grant.
 					user.scope = tokenData.scope;
+					if (tokenData.anonymous) {
+						user.anonymous = true;
+					}
 					// We'll track the token ancestry.
 					extraClaims.rjti = tokenData.rjti ?? tokenData.jti;
 					extraClaims.rgen = tokenData.rgen ? tokenData.rgen + 1 : 1;
@@ -685,8 +763,8 @@ module.exports = function() {
 					error(res, 400, 'Invalid authentication data');
 					return;
 				}
+				let scope = new Set();
 				if (r.params.scope) {
-					let scope = new Set();
 					for (let s of new Set(r.params.scope.split(/[\s,]+/).filter(s=>((!!s) && (s!==','))).sort())) {
 						if (! (user.scope.has(s) || user.scope.has('*'))) {
 							debug(`Requested scope ${s} not allowed for ${user.username}`);
@@ -696,12 +774,16 @@ module.exports = function() {
 						scope.add(s);
 					}
 					user.scope = scope;
-				} else if (opt.value('allow-empty-scope')) {
-					debug(`Allowing empty scope for ${user.username}`);
-					user.scope = new Set();
 				} else {
-					debug(`Not allowing empty scope for ${user.username}`);
-					user.scope =  undefined;
+					user.scope = scope;
+				}
+				if (user.scope.size < 1) {
+					if (opt.value('allow-empty-scope')) {
+						debug(`Allowing empty scope for ${user.username}`);
+					} else {
+						debug(`Not allowing empty scope for ${user.username}`);
+						user.scope =  undefined;
+					}
 				}
 				if (! user.scope) {
 					error(res, 400, 'Invalid authentication data');
@@ -747,6 +829,7 @@ module.exports = function() {
 			}
 		case '/authorize':
 			{
+				console.log('>>>', r.params);
 				if (! client) {
 					error(res, 400, 'Invalid client');
 					return;
@@ -784,8 +867,8 @@ module.exports = function() {
 					let user = validateUserAuth(auth, client);
 					if (user) {
 						console.log(user);
+						let scope = new Set();
 						if (r.params.scope) {
-							let scope = new Set();
 							for (let s of new Set(r.params.scope.split(/[\s,]+/).filter(s=>((!!s) && (s!==','))).sort())) {
 								if (! (user.scope.has(s) || user.scope.has('*'))) {
 									debug(`Requested scope ${s} not allowed for ${user.username}`);
@@ -795,12 +878,16 @@ module.exports = function() {
 								scope.add(s);
 							}
 							user.scope = scope;
-						} else if (opt.value('allow-empty-scope')) {
-							debug(`Allowing empty scope for ${user.username}`);
-							user.scope = new Set();
 						} else {
-							debug(`Not allowing empty scope for ${user.username}`);
-							user.scope =  undefined;
+							user.scope = scope;
+						}
+						if (user.scope.size < 1) {
+							if (opt.value('allow-empty-scope')) {
+								debug(`Allowing empty scope for ${user.username}`);
+							} else {
+								debug(`Not allowing empty scope for ${user.username}`);
+								user.scope =  undefined;
+							}
 						}
 						if (user.scope) {
 							debug(`User ${user.username} authenticated. Creating token.`);

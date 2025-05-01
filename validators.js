@@ -90,6 +90,28 @@ function validateCslFactory(options) {
 	}
 }
 
+function validateBool(s) {
+	switch (s) {
+	case true:
+	case 'true':
+	case 'TRUE':
+	case 'True':
+	case 'yes':
+	case 'YES':
+	case 'Yes':
+		return true;
+	case false:
+	case 'false':
+	case 'FALSE':
+	case 'False':
+	case 'no':
+	case 'NO':
+	case 'No':
+		return false;
+	}
+	return undefined;
+}
+
 // Do not export this.
 function _validateCsl(s, sep) {
 	if (! (typeof(s) === 'string')) {
@@ -127,6 +149,7 @@ function _validateInt(s, min, max) {
 
 module.exports = { validateUri,
 				   validateEmail,
+				   validateBool,
 				   validateCslFactory,
 				   validateIntFactory,
 				   validateRegExpFactory };
