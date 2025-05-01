@@ -601,6 +601,7 @@ module.exports = function() {
 				}
 			}
 		}
+
 		debug('url:', r.url)
 		debug('method:', r.method)
 		debug('params:', r.params)
@@ -673,10 +674,8 @@ module.exports = function() {
 					// using password grant.
 					user.scope = tokenData.scope;
 					// We'll track the token ancestry.
-					debug('ec1', extraClaims);
 					extraClaims.rjti = tokenData.rjti ?? tokenData.jti;
 					extraClaims.rgen = tokenData.rgen ? tokenData.rgen + 1 : 1;
-					debug('ec1', extraClaims);
 					break;
 				default:
 					error(res, 400, 'Internal error');

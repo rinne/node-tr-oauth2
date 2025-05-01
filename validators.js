@@ -7,10 +7,11 @@ function validateUri(s) {
 function validateEmail(s) {
     if (! ((typeof(s) === 'string') &&
 		   (s.length <= 64) &&
+		   (/^.{1,64}@.{1,255}$/.test(s)) &&
 		   (/^(\w+([.-]\w+)*)@(\w+(-\w+)*\.){1,5}(\w{2,10})$/.test(s)))) {
-		return undefined;
+	    return undefined;
 	}
-	return s.toLowerCase();
+    return s.toLowerCase();
 }
 
 function validateIntFactory(options) {
