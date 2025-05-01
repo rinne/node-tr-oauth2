@@ -129,8 +129,7 @@ module.exports = function() {
 						 description: 'CSV file containing users data.',
 						 hasArg: true,
 						 environment: 'TR_OAUTH2_OPT_USERS_FILE',
-						 optArgCb: ou.existingFileNameCb,
-						 required: true },
+						 optArgCb: ou.existingFileNameCb },
 					   { longName: 'clients-file',
 						 description: 'CSV file containing clients data.',
 						 hasArg: true,
@@ -260,6 +259,9 @@ module.exports = function() {
 		}
 		return (Promise.resolve()
 				.then(function() {
+					if (! opt.value('users-file')) {
+						return [ new Map(), new Map() ];
+					}
 					fs.watch(opt.value('users-file'), updateUsers);
 					return userFileRead(opt.value('users-file'));
 				})
@@ -329,29 +331,70 @@ module.exports = function() {
 		})();
 	}
 
+
+
 	function updateClients(ev, fn) {
 		(async function() {
 			try {
 				delay(1000);
 				debug('Updating clients');
-				let u = await userFileRead(opt.value('users-file'));
-				for (let n of context.users.keys()) {
-					if (! u.has(n)) {
-						context.jtLogout.set(n, Math.floor(Date.now() / 1000));
-					}
-				}
-				context.users = u;
+				let c = await clientFileRead(opt.value('clients-file'));
+				context.clients = c;
 			} catch (e) {
 				fatal(e);
 			}
 		})();
 	}
 
-	function validateUserAuth(auth, client) {
+	function str2uuid(s) {
+		let b = (crypto.createHash('sha256').update(s).digest());
+        for (let i = 0; i < 16; i++) {
+			b[i] ^= b[i + 16];
+		}
+		b[6] = 0b10000000 | (b[6] & 0b00001111);
+		b[8] = 0b10000000 | (b[8] & 0b00111111);
+		return ([ b.slice(0, 4).toString('hex'),
+				  b.slice(4, 6).toString('hex'),
+				  b.slice(6, 8).toString('hex'),
+				  b.slice(8, 10).toString('hex'),
+				  b.slice(10, 16).toString('hex') ].join('-'));
+	}
+
+	async function validateUserAuth(auth, client) {
 		if (! (context?.users &&
 			   ((typeof(auth?.user) === 'string')) &&
 			   ((typeof(auth?.password) === 'string')))) {
 			debug('Malformed auth data');
+			return undefined;
+		}
+
+		if (client.ext_auth_url) {
+			try {
+				let data = { username: auth.user, password: auth.password, secret: client.ext_auth_secret };
+				let res = await fetch(client.ext_auth_url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+				if (! res.ok) {
+					throw new Error(`Ext auth returnd HTTP status ${res.status}`);
+				}
+				res = await res.json();
+				if ((res?.valid === true) && (typeof(res?.userId) === 'string')) {
+					let user = {
+						username: str2uuid(res.userId),
+						password: crypto.randomUUID(),
+						scope: client.ext_auth_scopes,
+						email: auth.user,
+						totp: null,
+						ttl: null,
+						anonymous: true
+					};
+					return user;
+				} else if (res?.valid === false) {
+					throw new Error('Ext auth rejects the user');
+				} else {
+					throw new Error('Ext auth emits malformed response');
+				}
+			} catch (e) {
+				console.log(e);
+			}
 			return undefined;
 		}
 		const u = context.users.get(auth.user) ?? context.users.get(context.emails.get(auth.user));
@@ -591,7 +634,7 @@ module.exports = function() {
 		return data;
 	}
 
-	function handle(r)
+	async function handle(r)
 	{
 		let res = r.res, rd = {}, token, user;
 		delete r.res;
@@ -712,7 +755,7 @@ module.exports = function() {
 						return;
 					}
 					let auth = { user: r.params.username, password: r.params.password };
-					user = validateUserAuth(auth, client);
+					user = await validateUserAuth(auth, client);
 					break;
 				case 'refresh_token':
 					if (! (r.params.refresh_token && (typeof(r.params.refresh_token) === 'string'))) {
@@ -864,7 +907,7 @@ module.exports = function() {
 						return;
 					}
 					let auth = { user: r.params.username, password: r.params.password };
-					let user = validateUserAuth(auth, client);
+					let user = await validateUserAuth(auth, client);
 					if (user) {
 						console.log(user);
 						let scope = new Set();
@@ -1014,7 +1057,13 @@ module.exports = function() {
 			}
 			r.headers = req.headers;
 			r.res = res;
-			handle(r);
+			(async function(r) {
+				try {
+					await handle(r);
+				} catch (e) {
+					console.error(e);
+				}
+			})(r);
 		}
 		function errorCb() {
 			if (completed) {
